@@ -16,6 +16,12 @@ export interface UseNetworkDataReturn {
   connectionStatus: ConnectionStatus;
   triggerScenario: (scenarioName: string) => Promise<void>;
   activeScenario: string | null;
+  // Extracted anomaly states
+  networkAnomaly: boolean;
+  hardwareAnomaly: boolean;
+  userAnomaly: boolean;
+  securityAnomaly: boolean;
+  realAttackerIp: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,8 +137,8 @@ export function useNetworkData(): UseNetworkDataReturn {
   const [activeScenario, setActiveScenario] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<number | null>(null);
-  const scenarioPollerRef = useRef<number | null>(null);
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const scenarioPollerRef = useRef<NodeJS.Timeout | null>(null);
 
   // -----------------------------------------------------------------------
   // WebSocket connection with auto-reconnect
@@ -145,19 +151,69 @@ export function useNetworkData(): UseNetworkDataReturn {
       reconnectTimerRef.current = null;
     }
 
+    // Connection guard: only create new WebSocket if previous is fully CLOSED
+    if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+      console.log("[useNetworkData] WebSocket already exists, skipping connection");
+      return;
+    }
+
     setConnectionStatus("RECONNECTING");
 
     const ws = new WebSocket("ws://localhost:8000/ws");
+    wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log("[useNetworkData] WebSocket connected");
+      console.log("[useNetworkData] WebSocket connected - persistent connection established");
       setConnectionStatus("CONNECTED");
+      
+      // Send a ping to verify connection
+      ws.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
     };
 
     ws.onmessage = (msg) => {
       try {
-        const data: NetworkEvent = JSON.parse(msg.data);
+        const data = JSON.parse(msg.data);
+        console.log("🔥 WS RAW DATA:", msg.data);
+        console.log("RAW WS MESSAGE KEYS:", Object.keys(data));
+        console.log("RAW DOMAINS:", data.domains);
+        console.log("🔥 WS PARSED DATA:", data);
+        
+        // Extract anomaly states correctly
+        const networkAnomaly = data.domains?.network?.anomaly ?? false;
+        const hardwareAnomaly = data.domains?.hardware?.anomaly ?? false;
+        const userAnomaly = data.domains?.user?.anomaly ?? false;
+        const securityAnomaly = data.domains?.security?.anomaly ?? false;
+        
+        // Try multiple locations for real_attacker_ip
+        const realAttackerIp = data.real_attacker_ip ?? data.domains?.real_attacker_ip ?? data.metadata?.real_attacker_ip ?? null;
+        const scenarioActive = data.scenario_active ?? null;
+        
+        console.log("🔍 REAL ATTACKER IP DETECTION:", {
+          direct: data.real_attacker_ip,
+          domains: data.domains?.real_attacker_ip,
+          metadata: data.metadata?.real_attacker_ip,
+          final: realAttackerIp
+        });
+        
+        console.log("🔍 EXTRACTED ANOMALY STATES:", {
+          networkAnomaly,
+          hardwareAnomaly,
+          userAnomaly,
+          securityAnomaly,
+          realAttackerIp,
+          scenarioActive,
+          attackMode: data.attack_mode,
+          realAttack: data.real_attack,
+          correlatedAlerts: data.correlated_alerts?.length || 0
+        });
+        
+        // Update network data with extracted fields
         setNetworkData(data);
+
+        // Update active scenario from WebSocket
+        if (scenarioActive) {
+          setActiveScenario(scenarioActive);
+        }
 
         // Derive topology from domains
         setTopology(deriveTopology(data.domains));
@@ -190,12 +246,22 @@ export function useNetworkData(): UseNetworkDataReturn {
     wsRef.current = ws;
   }, []);
 
-  // Initial connection
+  // Initial connection and heartbeat
   useEffect(() => {
     connect();
+    
+    // Add heartbeat: send ping every 10 seconds to keep connection alive
+    const heartbeat = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({type: 'ping'}));
+        console.log("[useNetworkData] Heartbeat ping sent");
+      }
+    }, 10000);
+    
     return () => {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (wsRef.current) wsRef.current.close();
+      if (heartbeat) clearInterval(heartbeat);
     };
   }, [connect]);
 
@@ -253,5 +319,11 @@ export function useNetworkData(): UseNetworkDataReturn {
     connectionStatus,
     triggerScenario,
     activeScenario,
+    // Extracted anomaly states for components
+    networkAnomaly: networkData.domains?.network?.anomaly ?? false,
+    hardwareAnomaly: networkData.domains?.hardware?.anomaly ?? false,
+    userAnomaly: networkData.domains?.user?.anomaly ?? false,
+    securityAnomaly: networkData.domains?.security?.anomaly ?? false,
+    realAttackerIp: networkData.real_attacker_ip ?? null,
   };
 }

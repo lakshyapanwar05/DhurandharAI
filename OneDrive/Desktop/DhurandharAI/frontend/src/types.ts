@@ -65,6 +65,15 @@ export interface NetworkEvent {
   domains: Domains;
   correlated_alerts: CorrelatedAlert[];
   network_topology: NetworkTopology[];
+  scenario_active?: string | null;
+  real_attack?: {
+    source_ip: string;
+    target_ip: string;
+    payload: Record<string, any>;
+    timestamp: string;
+  };
+  attack_mode?: "simulated" | "real";
+  real_attacker_ip?: string;
 }
 
 export interface NodeState {
@@ -81,4 +90,5 @@ export interface ChatMessage {
   provider?: string;
   cached?: boolean;
   timestamp: string;
+  isProactive?: boolean;
 }
